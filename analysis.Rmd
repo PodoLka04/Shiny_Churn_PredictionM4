@@ -1,0 +1,137 @@
+---
+title: 'Приложение: <ваш подзаголовок>'
+author: "Подолин Дмитрий, dpodolin"
+output: 
+  html_document:
+    code_folding: hide
+---
+
+# Задача
+
+Для переработки в Shiny-приложение был выбран проект по анализу оттока клиентов банка, который я делал на основе SQL таблице в конце 2 модуля 3 курса(перед новым годом). Там про уход из банка было. В приложении реализована возможность прогнозирования вероятности ухода клиента на основе логистической регрессии. 
+
+Целевая аудитория:
+- Менеджеры по работе с клиентами
+- Аналитики банка
+- Служба удержания клиентов
+
+Приложение позволяет быстро оценить риск ухода клиента без необходимости технических знаний в области анализа данных.
+
+## Предварительный анализ
+```{r eval = F}
+# Подключение библиотек
+library(shiny)
+library(DBI)
+library(ClickHouseHTTP)
+library(dplyr)
+library(tidymodels)
+library(yardstick)
+
+#Подключение к ClickHouse и загрузка данных
+con = dbConnect(
+  ClickHouseHTTP::ClickHouseHTTP(),
+  user = 'studentminor',
+  password = 'DataMinorHSE!2023',
+  dbname = 'bank',
+  host = 'rc1a-i6ui9dhblsq8rgdo.mdb.yandexcloud.net',
+  port = 8443,
+  https = TRUE,
+  ssl_verifypeer = FALSE
+)
+
+query_model = " #извлечение признаков и цели
+  SELECT
+    p.Age,
+    pr.Balance,
+    pr.NumOfProducts,
+    pr.Exited
+  FROM profile AS p
+  INNER JOIN portfolio AS pr ON p.CustomerId = pr.CustomerId
+"
+
+data3 = dbGetQuery(con, query_model)
+dbDisconnect(con)
+
+# преоброзование данных и создание модели на основе линенйой регрессии
+data3 = data3 %>% mutate(Exited = factor(Exited, levels = c(0, 1)))
+
+set.seed(2023)
+split = initial_split(data3, prop = 0.8)
+data_tr = training(split)
+
+logistic_spec = logistic_reg(mode = "classification") %>% # определяем тип
+  set_engine("glm")
+
+log_model = logistic_spec %>% #обучаем
+  fit(Exited ~ Age + Balance + NumOfProducts, data = data_tr)
+
+saveRDS(log_model, "log_model.rds") # сохранение в файл модели
+```
+
+## Приложение
+
+Приложение позволяет:
+
+  Ввести параметры клиента:
+
+    1)Возраст
+
+    2)Баланс на счете
+
+    3)Количество продуктов банка
+
+  Получить прогноз:
+
+    1)Вероятность ухода (0-1)
+
+    2)Категориальный прогноз ("останется"/"уйдёт")
+### Интерфейс
+![Вот](изображение_2025-04-30_165132473.png)
+На самом деле кажется что модель работает, потому что если, например у клиента много денег на счету, но он приобрел только лишь один продукт банка, значит он в нем не заинтересован и уйдет. Тем более, что он молодой и готов познавать мир (завидую).
+
+
+```{r eval = F}
+# код интерфейса в неисполняемом чанке
+ui = fluidPage(
+  titlePanel("Предсказание оттока клиента"),
+  sidebarLayout(
+    sidebarPanel(
+      numericInput("Age", "Возраст клиента:", value = 35, min = 18, max = 100),
+      numericInput("Balance", "Баланс на счёте:", value = 50000, min = 0),
+      numericInput("NumOfProducts", "Количество продуктов:", value = 1, min = 1, max = 10),
+      actionButton("predict_btn", "Сделать предсказание")
+    ),
+    mainPanel(
+      verbatimTextOutput("prediction_text")
+    )
+  )
+)
+```
+
+### Сервер
+
+```{r eval = F}
+# код сервера в неисполняемом чанке
+server = function(input, output) {
+  model = readRDS("log_model.rds")
+  
+  observeEvent(input$predict_btn, {
+    new_data = tibble(
+      Age = input$Age,
+      Balance = input$Balance,
+      NumOfProducts = input$NumOfProducts
+    )
+    
+    prob = predict(model, new_data, type = "prob")$.pred_1
+    result = ifelse(prob > 0.5, "Скорее уйдёт", "Скорее останется")
+    
+    output$prediction_text = renderText({
+      paste0("Вероятность ухода: ", round(prob, 2), " — ", result)
+    })
+  })
+}
+```
+
+## Ссылка можно потыкать
+
+https://dpodolin.shinyapps.io/dfddd/
